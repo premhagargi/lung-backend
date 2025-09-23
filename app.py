@@ -249,7 +249,6 @@ def load_models():
 app = Flask(__name__)
 
 
-cnn_model, resnet, resnet_feature, pca, nb, knn = load_models()
 
 
 def predict_image(image, model, transform, pca=None, is_cnn=True):
@@ -340,7 +339,10 @@ if __name__ == '__main__':
     if not weights_exist:
         train_and_save_models()
     
+
+
     # Load models
+    cnn_model, resnet, resnet_feature, pca, nb, knn = load_models()
     
     # Test sample images
     test_sample_images()
