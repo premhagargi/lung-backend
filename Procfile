@@ -1,1 +1,1 @@
-web: gunicorn lung:app
+web: gunicorn app:app
