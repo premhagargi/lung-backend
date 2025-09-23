@@ -1,121 +1,92 @@
+from flask import Flask, request, jsonify
 import torch
 import torch.nn as nn
-from torchvision import models, transforms
+from torchvision import transforms, models
 from PIL import Image
-from flask import Flask, request, jsonify
 import io
+import joblib
+import cv2
+from skimage.feature import hog
 import numpy as np
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.naive_bayes import GaussianNB
-import os
-import pickle
 
 app = Flask(__name__)
 
-preprocess = transforms.Compose([
-    transforms.Resize((224, 224)),
+# Load models
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+# CNN
+class LungCNN(nn.Module):
+    def __init__(self):
+        super(LungCNN, self).__init__()
+        self.conv1 = nn.Conv2d(3, 32, 3, padding=1)
+        self.pool = nn.MaxPool2d(2, 2)
+        self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
+        self.fc1 = nn.Linear(64 * 56 * 56, 128)
+        self.fc2 = nn.Linear(128, 2)
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        x = self.pool(self.relu(self.conv1(x)))
+        x = self.pool(self.relu(self.conv2(x)))
+        x = x.view(-1, 64 * 56 * 56)
+        x = self.relu(self.fc1(x))
+        x = self.fc2(x)
+        return x
+
+cnn_model = LungCNN().to(device)
+cnn_model.load_state_dict(torch.load('cnn_model.pth', map_location=device))
+cnn_model.eval()
+
+# ResNet
+resnet_model = models.resnet50(pretrained=False).to(device)
+num_features = resnet_model.fc.in_features
+resnet_model.fc = nn.Linear(num_features, 2)
+resnet_model.load_state_dict(torch.load('resnet_model.pth', map_location=device))
+resnet_model.eval()
+
+# NB
+nb_model = joblib.load('nb_model.pkl')
+
+# Transforms
+transform = transforms.Compose([
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 ])
 
-def load_resnet_model():
-    model = models.resnet50(pretrained=True)
-    num_ftrs = model.fc.in_features
-    model.fc = nn.Linear(num_ftrs, 2)
-    model.eval()
-    feature_extractor = nn.Sequential(*list(model.children())[:-1])
-    os.makedirs("model_weights", exist_ok=True)
-    weight_os = {'state_dict': model.state_dict()}
-    torch.save(weight_os, "model_weights/resnet50_lung_ct.pth")
-    model.load_state_dict(torch.load("model_weights/resnet50_lung_ct.pth")['state_dict'])
-    return model, feature_extractor
+def preprocess_image(file):
+    img = Image.open(io.BytesIO(file.read())).convert('RGB')
+    img_tensor = transform(img).unsqueeze(0).to(device)
+    return img_tensor
 
-def simulate_training_data(num_samples=100):
-    np.random.seed(42)
-    X_train = np.random.rand(num_samples, 2048)
-    y_train = np.random.randint(0, 2, num_samples)
-    return X_train, y_train
+def hog_features(img_bytes):
+    img = Image.open(io.BytesIO(img_bytes)).convert('L')
+    img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
+    img = cv2.resize(img, (64, 64))
+    features = hog(img, orientations=8, pixels_per_cell=(8, 8), cells_per_block=(2, 2), visualize=False)
+    return features.reshape(1, -1)
 
-def train_knn(X_train, y_train):
-    knn = KNeighborsClassifier(n_neighbors=5)
-    knn.fit(X_train, y_train)
-    os.makedirs("model_weights", exist_ok=True)
-    with open("model_weights/knn_lung_ct.pkl", "wb") as f:
-        pickle.dump(knn, f)
-    with open("model_weights/knn_lung_ct.pkl", "rb") as f:
-        knn = pickle.load(f)
-    return knn
-
-def train_naive_bayes(X_train, y_train):
-    nb = GaussianNB()
-    nb.fit(X_train, y_train)
-    os.makedirs("model_weights", exist_ok=True)
-    with open("model_weights/nb_lung_ct.pkl", "wb") as f:
-        pickle.dump(nb, f)
-    with open("model_weights/nb_lung_ct.pkl", "rb") as f:
-        nb = pickle.load(f)
-    return nb
-
-def predict_lung_cancer(image_bytes, resnet_model, feature_extractor, knn_model, nb_model):
-    try:
-        image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
-        image_tensor = preprocess(image).unsqueeze(0)
-        image_tensor = image_tensor.to(device)
-        resnet_model.to(device)
+@app.route('/predict/<model_type>', methods=['POST'])
+def predict(model_type):
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file uploaded'}), 400
+    file = request.files['file']
+    img_bytes = file.read()
+    
+    if model_type == 'cnn' or model_type == 'resnet':
+        img_tensor = preprocess_image(io.BytesIO(img_bytes))
         with torch.no_grad():
-            outputs = resnet_model(image_tensor)
-            probabilities = torch.nn.functional.softmax(outputs, dim=1)
-            resnet_confidence, resnet_predicted = torch.max(probabilities, 1)
-        feature_extractor.to(device)
-        with torch.no_grad():
-            features = feature_extractor(image_tensor).cpu().numpy().flatten()
-        knn_pred = knn_model.predict([features])[0]
-        knn_probs = knn_model.predict_proba([features])[0]
-        knn_confidence = np.max(knn_probs) * 100
-        nb_pred = nb_model.predict([features])[0]
-        nb_probs = nb_model.predict_proba([features])[0]
-        nb_confidence = np.max(nb_probs) * 100
-        class_names = ['Non-Cancerous', 'Cancerous']
-        return {
-            'status': 'success',
-            'resnet50': {
-                'prediction': class_names[resnet_predicted.item()],
-                'confidence_score': round(resnet_confidence.item() * 100, 2)
-            },
-            'knn': {
-                'prediction': class_names[knn_pred],
-                'confidence_score': round(knn_confidence, 2)
-            },
-            'naive_bayes': {
-                'prediction': class_names[nb_pred],
-                'confidence_score': round(nb_confidence, 2)
-            }
-        }
-    except Exception as e:
-        return {
-            'status': 'error',
-            'message': f'Error processing image: {str(e)}'
-        }
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-resnet_model, feature_extractor = load_resnet_model()
-X_train, y_train = simulate_training_data()
-knn_model = train_knn(X_train, y_train)
-nb_model = train_naive_bayes(X_train, y_train)
-
-@app.route('/predict', methods=['POST'])
-def predict():
-    if 'image' not in request.files:
-        return jsonify({'status': 'error', 'message': 'No image provided'}), 400
-    file = request.files['image']
-    if file.filename == '':
-        return jsonify({'status': 'error', 'message': 'No image selected'}), 400
-    try:
-        image_bytes = file.read()
-        result = predict_lung_cancer(image_bytes, resnet_model, feature_extractor, knn_model, nb_model)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': f'Server error: {str(e)}'}), 500
+            output = cnn_model(img_tensor) if model_type == 'cnn' else resnet_model(img_tensor)
+            pred = torch.argmax(output, 1).item()
+    elif model_type == 'nb':
+        features = hog_features(img_bytes)
+        pred = nb_model.predict(features)[0]
+    else:
+        return jsonify({'error': 'Invalid model: cnn, nb, or resnet'}), 400
+    
+    label = 'Cancer' if pred == 0 else 'NonCancer'
+    confidence = torch.softmax(output, 1).max().item() if model_type != 'nb' else nb_model.predict_proba(features).max()
+    
+    return jsonify({'prediction': label, 'confidence': f'{confidence:.4f}'})
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True)
