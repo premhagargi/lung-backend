@@ -243,13 +243,15 @@ def load_models():
     
     return cnn_model, resnet, resnet_feature, pca, nb, knn
 
+
+cnn_model, resnet, resnet_feature, pca, nb, knn = load_models()
+
 # ------------------------------
 # FLASK API
 # ------------------------------
 app = Flask(__name__)
 
 
-cnn_model, resnet, resnet_feature, pca, nb, knn = load_models()
 
 
 
@@ -347,7 +349,7 @@ if __name__ == '__main__':
     # Load models
     
     # Test sample images
-    test_sample_images()
+    # test_sample_images()
     
     # Start Flask API
     print("\nStarting Flask API on http://localhost:5000/predict")
