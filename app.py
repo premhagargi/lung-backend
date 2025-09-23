@@ -248,6 +248,10 @@ def load_models():
 # ------------------------------
 app = Flask(__name__)
 
+
+cnn_model, resnet, resnet_feature, pca, nb, knn = load_models()
+
+
 def predict_image(image, model, transform, pca=None, is_cnn=True):
     image = transform(image).unsqueeze(0).to(device)
     with torch.no_grad():
@@ -269,6 +273,11 @@ def predict_image(image, model, transform, pca=None, is_cnn=True):
             predicted_class = class_names[pred]
         mapped_class = class_mapping.get(predicted_class, predicted_class)
         return mapped_class, confidence
+
+
+@app.route('/')
+def index():
+    return {"status": "API is running"}
 
 
 @app.route('/predict', methods=['POST'])
@@ -332,12 +341,11 @@ if __name__ == '__main__':
         train_and_save_models()
     
     # Load models
-    cnn_model, resnet, resnet_feature, pca, nb, knn = load_models()
     
     # Test sample images
     test_sample_images()
     
     # Start Flask API
     print("\nStarting Flask API on http://localhost:5000/predict")
-if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+if __name__ == "__main__":
+    app.run(debug=False, host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
