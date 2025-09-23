@@ -348,4 +348,4 @@ if __name__ == '__main__':
     # Start Flask API
     print("\nStarting Flask API on http://localhost:5000/predict")
 if __name__ == "__main__":
-    app.run(debug=False, host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
+    app.run(debug=False, host='0.0.0.0', port=int(os.environ.get("PORT", 5000))) 
